@@ -9,12 +9,19 @@ from scipy.fft import fft, fftfreq
 
 # User-defined functions
 ########################################################
+
+# Accepts a signal and a sampling rate, and plays the signal
+# Waits until the signal is finished playing before returning
 def play_audio(signal, fs):
     """Play an audio signal using sounddevice."""
     sd.play(signal, fs)
     sd.wait()
 
-def play_all_sounds():
+# Accepts a list of signals and a sampling rate, and plays each signal in sequence
+# Waits until each signal is finished playing before moving on to the next one
+# Prints a message for each signal as it is played
+# Returns when all signals are finished playing
+def play_all_sounds(signals, fs):
     """Play all generated signals in sequence."""
     print("\nPlaying signals for comparison...")
     print("1. Original message (A4 + A5 notes)")
@@ -30,16 +37,21 @@ def play_all_sounds():
         print(f"   FM signal with β={beta:.1f}")
         play_audio(fm_signals[i], fs)
 
+#Handles the window closing event (especially Mac-OS friendly)
 def on_closing():
     """Handle window closing event."""
     root.withdraw()  # Hide the window immediately
     root.after(100, play_and_destroy)  # Schedule the sound playback and destruction
 
+# Plays all signals and then destroys the window (especially Mac-OS friendly)
 def play_and_destroy():
     """Play sounds and destroy the window."""
     play_all_sounds()  # Play sounds
     root.destroy()  # Then destroy the window
 
+# Adds annotations to show modulation concepts in spectra
+# Accepts an axis, a signal type, and a dictionary of parameters
+# Adds annotations to the axis to show the carrier frequency, sidebands, and bandwidth  
 def enhance_spectrum_visualization(ax, signal_type, params):
     """Add annotations to show modulation concepts in spectra.
     
@@ -92,6 +104,8 @@ def enhance_spectrum_visualization(ax, signal_type, params):
                 f'Bandwidth ≈ {int(bandwidth)} Hz\nβ={beta:.1f}, Δf={freq_dev} Hz', 
                 horizontalalignment='center')
 
+# Creates a new window showing frequency spectra of all signals
+
 def show_spectrum_window():
     """Create a new window showing frequency spectra of all signals."""
     spectrum_window = tk.Toplevel(root)
@@ -107,7 +121,7 @@ def show_spectrum_window():
         "<Configure>",
         lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
     )
-
+    #Creates a scrollable frame for the new window (plotting was horrible without scrollbar)
     canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
     canvas.configure(yscrollcommand=scrollbar.set)
 
