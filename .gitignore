@@ -35,4 +35,11 @@ wheels/
 
 # OS specific files
 .DS_Store
-Thumbs.db 
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Project specific
+create_notebook.py 
