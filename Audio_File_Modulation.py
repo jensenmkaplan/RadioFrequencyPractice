@@ -6,7 +6,7 @@ import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 from scipy.fft import fft, fftfreq
-from scipy.signal import hilbert
+from scipy.signal import hilbert, butter, filtfilt
 from pydub import AudioSegment
 
 def load_audio_file(file_path, duration_seconds=5):
@@ -40,6 +40,21 @@ def create_carrier(fs, duration, fc, message_length):
     t = np.linspace(0, duration, message_length, endpoint=False)
     carrier = np.sin(2 * np.pi * fc * t)
     return t, carrier
+
+def lowpass_filter(signal, cutoff_freq, fs, order=4):
+    """Apply a low-pass filter to the signal."""
+    nyquist = fs / 2
+    normalized_cutoff = cutoff_freq / nyquist
+    b, a = butter(order, normalized_cutoff, btype='low')
+    return filtfilt(b, a, signal)
+
+def bandpass_filter(signal, lowcut, highcut, fs, order=4):
+    """Apply a band-pass filter to the signal."""
+    nyquist = fs / 2
+    low = lowcut / nyquist
+    high = highcut / nyquist
+    b, a = butter(order, [low, high], btype='band')
+    return filtfilt(b, a, signal)
 
 def amplitude_modulate(message, carrier, m):
     """Apply amplitude modulation to the message signal with improved quality."""
@@ -253,7 +268,6 @@ def play_all_sounds():
     print("1. Original message")
     play_audio(message, fs)
 
-
     #note that the system can't actually produce the modulated signal since 1MHz is much too high.
     #we hear an aliased version of the carrier which is probably 14.7kHz
     print("\n2. Modulated signals with different modulation indices:")
@@ -268,7 +282,9 @@ def play_all_sounds():
     print("\n3. Demodulated signals:")
     for i, m in enumerate(modulation_indices):
         print(f"   Demodulated signal with m={m:.1f}")
-        play_audio(am_signals[i], fs)
+        # Generate demodulated signal
+        am_signal = amplitude_modulate(message, carrier, m)
+        play_audio(am_signal, fs)
 
 def update_main_plots(start_time_entry, duration_entry):
     """Update the main window plots with the current time window."""
@@ -383,6 +399,41 @@ def show_spectrum_window():
     canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
     canvas.configure(yscrollcommand=scrollbar.set)
 
+    # Add bandwidth control
+    control_frame = tk.Frame(scrollable_frame)
+    control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+    # Add bandwidth control
+    bw_frame = tk.Frame(control_frame)
+    bw_frame.pack(side=tk.LEFT, padx=5)
+    tk.Label(bw_frame, text="Bandwidth (kHz):").pack(side=tk.LEFT)
+    bw_scale = tk.Scale(bw_frame, from_=1, to=20, orient=tk.HORIZONTAL, length=200)
+    bw_scale.set(5)  # Default to 5 kHz
+    bw_scale.pack(side=tk.LEFT, padx=5)
+    
+    # Add bandwidth text box
+    bw_entry = tk.Entry(bw_frame, width=10)
+    bw_entry.insert(0, "5.0")  # Default to 5 kHz
+    bw_entry.pack(side=tk.LEFT, padx=5)
+    
+    # Function to sync slider and text box
+    def update_bw_scale(*args):
+        try:
+            value = float(bw_entry.get())
+            if 1 <= value <= 20:
+                bw_scale.set(value)
+                update_spectrum_plots(start_time, duration, scrollable_frame, value)
+        except ValueError:
+            pass
+    
+    def update_bw_entry(*args):
+        bw_entry.delete(0, tk.END)
+        bw_entry.insert(0, f"{bw_scale.get():.1f}")
+    
+    # Bind events to sync slider and text box
+    bw_entry.bind('<Return>', update_bw_scale)
+    bw_scale.config(command=update_bw_entry)
+
     # Add time window input fields
     start_time, duration = create_time_window_frame(scrollable_frame)
 
@@ -392,17 +443,17 @@ def show_spectrum_window():
 
     # Add update button
     update_button = tk.Button(button_frame, text="Update Plots", 
-                            command=lambda: update_spectrum_plots(start_time, duration, scrollable_frame))
+                            command=lambda: update_spectrum_plots(start_time, duration, scrollable_frame, float(bw_entry.get())))
     update_button.pack(side=tk.RIGHT, padx=5)
 
     # Initial plot
-    update_spectrum_plots(start_time, duration, scrollable_frame)
+    update_spectrum_plots(start_time, duration, scrollable_frame, float(bw_entry.get()))
 
     # Pack the scrollbar and canvas
     scrollbar.pack(side="right", fill="y")
     canvas.pack(side="left", fill="both", expand=True)
 
-def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
+def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame, bandwidth_khz):
     """Update the spectrum plots with the current time window."""
     start_time, duration = get_time_window(start_time_entry, duration_entry)
     if start_time is None or duration is None:
@@ -429,12 +480,13 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     # Generate modulated signal at original sampling rate for demodulation
     m = modulation_indices[0]
     modulated = (1 + m * message[start_idx:end_idx]) * carrier[start_idx:end_idx]
+    
     analytic_signal = hilbert(modulated)
     demodulated = np.abs(analytic_signal)
     demodulated_fft = np.abs(fft(demodulated, n=n_fft))[:n_fft//2]
 
     # For carrier and modulated spectra, use higher sampling rate
-    fs_high = 4500000  # 4.5 MHz sampling rate for carrier visualization (4 × 1 MHz carrier)
+    fs_high = 4500000  # 4.5 MHz sampling rate for carrier visualization
     t_high = np.linspace(start_time, start_time + duration, int(duration * fs_high))
     
     # Generate carrier and modulated signals at higher sampling rate
@@ -478,7 +530,8 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     ax2.set_ylabel('Normalized Magnitude')
     ax2.legend()
     ax2.grid(True)
-    ax2.set_xlim(fc-5000, fc+5000)  # Show ±5 kHz around carrier
+    bandwidth_hz = bandwidth_khz * 1000
+    ax2.set_xlim(fc-bandwidth_hz, fc+bandwidth_hz)  # Show ±bandwidth around carrier
     ax2.set_ylim(0, 1.2)
 
     # Plot modulated spectrum
@@ -489,7 +542,7 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     ax3.set_ylabel('Normalized Magnitude')
     ax3.legend()
     ax3.grid(True)
-    ax3.set_xlim(fc-5000, fc+5000)  # Show ±5 kHz around carrier
+    ax3.set_xlim(fc-bandwidth_hz, fc+bandwidth_hz)  # Show ±bandwidth around carrier
     ax3.set_ylim(0, 1.2)
 
     # Plot demodulated spectrum
