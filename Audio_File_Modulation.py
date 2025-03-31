@@ -253,6 +253,9 @@ def play_all_sounds():
     print("1. Original message")
     play_audio(message, fs)
 
+
+    #note that the system can't actually produce the modulated signal since 1MHz is much too high.
+    #we hear an aliased version of the carrier which is probably 14.7kHz
     print("\n2. Modulated signals with different modulation indices:")
     for i, m in enumerate(modulation_indices):
         print(f"   Modulated signal with m={m:.1f}")
@@ -431,7 +434,7 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     demodulated_fft = np.abs(fft(demodulated, n=n_fft))[:n_fft//2]
 
     # For carrier and modulated spectra, use higher sampling rate
-    fs_high = 240000  # 240 kHz sampling rate for carrier visualization (2 × 120 kHz)
+    fs_high = 4500000  # 4.5 MHz sampling rate for carrier visualization (4 × 1 MHz carrier)
     t_high = np.linspace(start_time, start_time + duration, int(duration * fs_high))
     
     # Generate carrier and modulated signals at higher sampling rate
@@ -447,19 +450,21 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     carrier_fft = np.abs(fft(carrier_high, n=n_fft_high))[:n_fft_high//2]
     modulated_fft = np.abs(fft(modulated_high, n=n_fft_high))[:n_fft_high//2]
     
-    # Scale all spectra relative to message spectrum maximum
-    max_magnitude = np.max(message_fft)
-    message_fft = message_fft / max_magnitude
-    carrier_fft = carrier_fft / max_magnitude
-    modulated_fft = modulated_fft / max_magnitude
-    demodulated_fft = demodulated_fft / max_magnitude
+    # Calculate maximum value of message spectrum for scaling
+    max_message_magnitude = np.max(message_fft)
+    
+    # Normalize spectra
+    message_fft = message_fft / max_message_magnitude
+    carrier_fft = carrier_fft / np.max(carrier_fft)
+    modulated_fft = modulated_fft / np.max(modulated_fft)
+    demodulated_fft = demodulated_fft / max_message_magnitude  # Scale relative to message spectrum
 
     # Plot message spectrum
     ax1 = fig.add_subplot(total_plots, 1, 1)
     ax1.semilogx(pos_freqs, message_fft, label='Message Spectrum')
     ax1.set_title('Message Spectrum')
     ax1.set_xlabel('Frequency (Hz)')
-    ax1.set_ylabel('Relative Magnitude')
+    ax1.set_ylabel('Normalized Magnitude')
     ax1.legend()
     ax1.grid(True)
     ax1.set_xlim(10, fs/2)  # Show from 10 Hz to Nyquist frequency
@@ -470,10 +475,10 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     ax2.plot(pos_freqs_high, carrier_fft, label='Carrier Spectrum')
     ax2.set_title(f'Carrier Spectrum ({fc/1000:.1f} kHz)')
     ax2.set_xlabel('Frequency (Hz)')
-    ax2.set_ylabel('Relative Magnitude')
+    ax2.set_ylabel('Normalized Magnitude')
     ax2.legend()
     ax2.grid(True)
-    ax2.set_xlim(fc-20000, fc+20000)  # Show ±20 kHz around carrier
+    ax2.set_xlim(fc-5000, fc+5000)  # Show ±5 kHz around carrier
     ax2.set_ylim(0, 1.2)
 
     # Plot modulated spectrum
@@ -481,10 +486,10 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     ax3.plot(pos_freqs_high, modulated_fft, label='Modulated Spectrum')
     ax3.set_title('Modulated Spectrum')
     ax3.set_xlabel('Frequency (Hz)')
-    ax3.set_ylabel('Relative Magnitude')
+    ax3.set_ylabel('Normalized Magnitude')
     ax3.legend()
     ax3.grid(True)
-    ax3.set_xlim(fc-20000, fc+20000)  # Show ±20 kHz around carrier
+    ax3.set_xlim(fc-5000, fc+5000)  # Show ±5 kHz around carrier
     ax3.set_ylim(0, 1.2)
 
     # Plot demodulated spectrum
@@ -492,11 +497,11 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
     ax4.semilogx(pos_freqs, demodulated_fft, label='Demodulated Spectrum')
     ax4.set_title('Demodulated Spectrum')
     ax4.set_xlabel('Frequency (Hz)')
-    ax4.set_ylabel('Relative Magnitude')
+    ax4.set_ylabel('Magnitude (relative to message)')
     ax4.legend()
     ax4.grid(True)
     ax4.set_xlim(10, fs/2)  # Show from 10 Hz to Nyquist frequency
-    ax4.set_ylim(0, 1.2)
+    ax4.set_ylim(0, 1.2)  # Use same scale as message spectrum
 
     # Update the canvas
     if hasattr(update_spectrum_plots, 'canvas_widget'):
@@ -508,7 +513,7 @@ def update_spectrum_plots(start_time_entry, duration_entry, spectrum_frame):
 if __name__ == "__main__":
     # Audio parameters
     fs = 44100  # Standard audio sampling rate
-    fc = 100000  # 100 kHz carrier (simulating radio-like behavior)
+    fc = 1000000  # 1000 kHz (1 MHz) carrier frequency - typical AM radio frequency
     
     # Modulation parameters
     modulation_indices = [1.0, 3.0]  # Standard modulation index for AM radio, m = 1, and then an example of overmodulation m=3 where distortion occurs
