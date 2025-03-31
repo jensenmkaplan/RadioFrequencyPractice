@@ -40,6 +40,7 @@ Thumbs.db
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb_checkpoints/
+*.ipynb
 
 # Project specific
 create_notebook.py 

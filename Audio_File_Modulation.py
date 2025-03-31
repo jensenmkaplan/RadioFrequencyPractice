@@ -253,9 +253,18 @@ def play_all_sounds():
     print("1. Original message")
     play_audio(message, fs)
 
-    print("\n2. AM signals with different modulation indices:")
+    print("\n2. Modulated signals with different modulation indices:")
     for i, m in enumerate(modulation_indices):
-        print(f"   AM signal with m={m:.1f}")
+        print(f"   Modulated signal with m={m:.1f}")
+        # Generate modulated signal
+        modulated = (1 + m * message) * carrier
+        # Normalize for playback
+        modulated = modulated / np.max(np.abs(modulated)) * 0.99
+        play_audio(modulated, fs)
+
+    print("\n3. Demodulated signals:")
+    for i, m in enumerate(modulation_indices):
+        print(f"   Demodulated signal with m={m:.1f}")
         play_audio(am_signals[i], fs)
 
 def update_main_plots(start_time_entry, duration_entry):
