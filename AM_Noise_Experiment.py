@@ -35,13 +35,14 @@ def create_carrier(fs, duration, fc, message_length):
     carrier = np.sin(2 * np.pi * fc * t)
     return t, carrier
 
-def add_noise(signal, noise_type='gaussian', noise_level=0.1):
+def add_noise(signal, noise_level=0.1):
     """Add noise to a signal.
     
     Args:
         signal: Input signal
-        noise_type: Type of noise ('gaussian', 'uniform', 'impulse')
         noise_level: Noise level relative to signal power (0-1)
+    Returns:
+        tuple: (noisy_signal, noise_components) where noise_components is a dict containing individual noise types
     """
     # Use signal power for reference if signal is not zero
     if np.any(signal):
@@ -51,29 +52,61 @@ def add_noise(signal, noise_type='gaussian', noise_level=0.1):
         # For zero signal, use a reference power
         noise_power = noise_level
     
-    if noise_type == 'gaussian':
-        # Generate complex Gaussian noise
-        noise = np.random.normal(0, np.sqrt(noise_power/2), len(signal)) + \
-                1j * np.random.normal(0, np.sqrt(noise_power/2), len(signal))
-        noise = noise.real
-    elif noise_type == 'uniform':
-        # Generate uniform noise with more consistent amplitude
-        noise = np.random.uniform(-np.sqrt(noise_power), np.sqrt(noise_power), len(signal))
-    elif noise_type == 'impulse':
-        # Generate impulse noise with fewer, larger spikes
-        noise = np.zeros_like(signal)
-        num_impulses = int(len(signal) * noise_level * 0.05)  # More impulses
-        impulse_indices = np.random.choice(len(signal), num_impulses, replace=False)
-        # Make spikes much larger and add some width to them
-        for idx in impulse_indices:
-            # Add a short burst of impulses
-            burst_length = 5  # Shorter burst
-            burst_indices = np.arange(idx, min(idx + burst_length, len(signal)))
-            # Create a tapered burst
-            taper = np.exp(-np.arange(burst_length) / (burst_length/2))
-            noise[burst_indices] = np.random.choice([-1, 1]) * np.sqrt(noise_power * 50) * taper  # Larger spikes
+    # Initialize noise array
+    noise = np.zeros_like(signal)
+    noise_components = {}
     
-    return signal + noise
+    # Add all types of noise
+    # 1. Gaussian noise (thermal noise)
+    gaussian_noise = np.random.normal(0, np.sqrt(noise_power/2), len(signal)) + \
+                    1j * np.random.normal(0, np.sqrt(noise_power/2), len(signal))
+    gaussian_noise = gaussian_noise.real
+    noise += gaussian_noise
+    noise_components['gaussian'] = gaussian_noise
+    
+    # 2. Impulse noise (more visible spikes)
+    impulse_noise = np.zeros_like(signal)
+    num_impulses = int(len(signal) * noise_level * 0.1)  # Increased number of impulses
+    impulse_indices = np.random.choice(len(signal), num_impulses, replace=False)
+    for idx in impulse_indices:
+        burst_length = 10  # Longer burst
+        burst_indices = np.arange(idx, min(idx + burst_length, len(signal)))
+        taper = np.exp(-np.arange(burst_length) / (burst_length/2))
+        impulse_noise[burst_indices] = np.random.choice([-1, 1]) * np.sqrt(noise_power * 100) * taper
+    noise += impulse_noise
+    noise_components['impulse'] = impulse_noise
+    
+    # 3. Fading (more pronounced variations)
+    t = np.arange(len(signal)) / len(signal)
+    fade_rate = 0.2  # Increased fade rate
+    fade = 1 + 0.8 * np.sin(2 * np.pi * fade_rate * t)  # Increased amplitude
+    fade += 0.4 * np.random.randn(len(signal))  # More random variation
+    fade = np.maximum(fade, 0.3)  # Allow deeper fades
+    fading_noise = signal * (fade - 1)
+    noise += fading_noise
+    noise_components['fading'] = fading_noise
+    
+    # 4. Adjacent channel (stronger interference)
+    offset_freq = 0.15  # Increased offset
+    carrier = np.sin(2 * np.pi * offset_freq * t)
+    modulation = np.random.randn(len(signal))
+    modulation = np.convolve(modulation, np.ones(200)/200, mode='same')  # Smoother modulation
+    adjacent_noise = carrier * modulation * np.sqrt(noise_power * 2)  # Doubled power
+    noise += adjacent_noise
+    noise_components['adjacent'] = adjacent_noise
+    
+    # 5. Multipath (more visible echo)
+    delay = int(len(signal) * 0.02)  # Longer delay
+    attenuated = 0.5  # Increased amplitude
+    multipath = np.zeros_like(signal)
+    multipath[delay:] = attenuated * signal[:-delay]
+    phase = np.random.uniform(0, 2*np.pi)
+    multipath_noise = multipath * np.cos(phase)
+    noise += multipath_noise
+    noise_components['multipath'] = multipath_noise
+    
+    print("Adding noise components:", list(noise_components.keys()))
+    return signal + noise, noise_components
 
 def lowpass_filter(signal, cutoff_freq, fs, order=4):
     """Apply a low-pass filter to the signal."""
@@ -96,29 +129,123 @@ def lowpass_filter(signal, cutoff_freq, fs, order=4):
     
     return filtered
 
-def bandpass_filter(signal, lowcut, highcut, fs, order=4):
+def highpass_filter(signal, cutoff_freq, fs, order=4):
+    """Apply a high-pass filter to the signal."""
+    # Remove DC offset first
+    signal = signal - np.mean(signal)
+    
+    # Normalize the signal
+    signal = signal / np.max(np.abs(signal))
+    
+    # Apply highpass filter
+    nyquist = fs / 2
+    normalized_cutoff = cutoff_freq / nyquist
+    b, a = butter(order, normalized_cutoff, btype='high', analog=False)
+    
+    # Use forward-backward filtering
+    filtered = filtfilt(b, a, signal, method='gust')
+    
+    # Normalize the filtered signal
+    filtered = filtered / np.max(np.abs(filtered))
+    
+    return filtered
+
+def bandpass_filter(signal, lowcut, highcut, fs, order=2):
     """Apply a band-pass filter to the signal."""
+    # Check for invalid input
+    if not np.all(np.isfinite(signal)):
+        print("Warning: Input signal contains infs or NaNs")
+        return signal
+    
+    # Remove DC offset first
+    signal = signal - np.mean(signal)
+    
+    # Normalize the signal
+    max_val = np.max(np.abs(signal))
+    if max_val > 0:
+        signal = signal / max_val
+    else:
+        print("Warning: Signal has zero magnitude")
+        return signal
+    
+    # Apply bandpass filter
     nyquist = fs / 2
     low = lowcut / nyquist
     high = highcut / nyquist
-    b, a = butter(order, [low, high], btype='band')
-    # Use forward-backward filtering with lower order to prevent numerical instability
-    return filtfilt(b, a, signal, method='gust')
+    
+    # Ensure cutoff frequencies are within valid range
+    if low <= 0 or high >= 1:
+        print("Warning: Invalid cutoff frequencies")
+        return signal
+    
+    try:
+        # Use a lower order filter
+        b, a = butter(order, [low, high], btype='band')
+        
+        # Use forward-backward filtering with gust method
+        filtered = filtfilt(b, a, signal, method='gust')
+        
+        # Check for invalid output
+        if not np.all(np.isfinite(filtered)):
+            print("Warning: Filtered signal contains infs or NaNs")
+            return signal
+        
+        # Normalize the filtered signal
+        max_val = np.max(np.abs(filtered))
+        if max_val > 0:
+            filtered = filtered / max_val
+        else:
+            print("Warning: Filtered signal has zero magnitude")
+            return signal
+        
+        return filtered
+    except Exception as e:
+        print(f"Error in filtering: {e}")
+        return signal
 
-def amplitude_modulate(message, carrier, m, noise_type=None, noise_level=0):
+def amplitude_modulate(message, carrier, m, noise_level=0):
     """Apply amplitude modulation to the message signal with optional noise."""
+    # Check for invalid input
+    if not np.all(np.isfinite(message)) or not np.all(np.isfinite(carrier)):
+        print("Warning: Input signals contain infs or NaNs")
+        return message
+    
     # Create the modulated signal
     modulated = (1 + m * message) * carrier
     
     # Add noise if specified
-    if noise_type and noise_level > 0:
-        modulated = add_noise(modulated, noise_type, noise_level)
+    if noise_level > 0:
+        print(f"Adding all noise types with level {noise_level} to modulated signal")
+        modulated, noise_components = add_noise(modulated, noise_level=noise_level)
+        print("Noise components in modulation:", list(noise_components.keys()))
+        # Store noise components for later use
+        amplitude_modulate.noise_components = noise_components
+    
+    # Normalize modulated signal
+    max_val = np.max(np.abs(modulated))
+    if max_val > 0:
+        modulated = modulated / max_val
+    else:
+        print("Warning: Modulated signal has zero magnitude")
+        return message
     
     # Simulate demodulation (envelope detection)
     demodulated = np.abs(hilbert(modulated))
     
+    # Check for invalid output
+    if not np.all(np.isfinite(demodulated)):
+        print("Warning: Demodulated signal contains infs or NaNs")
+        return message
+    
     # Normalize to prevent clipping
-    return demodulated / np.max(np.abs(demodulated))
+    max_val = np.max(np.abs(demodulated))
+    if max_val > 0:
+        demodulated = demodulated / max_val
+    else:
+        print("Warning: Demodulated signal has zero magnitude")
+        return message
+    
+    return demodulated
 
 def play_audio(signal, fs):
     """Play an audio signal using sounddevice."""
@@ -156,7 +283,7 @@ def get_time_window(start_time_entry, duration_entry):
         tk.messagebox.showerror("Error", "Please enter valid numbers for time window")
         return None, None
 
-def update_plots(start_time_entry, duration_entry, spectrum_frame, noise_type, noise_level):
+def update_plots(start_time_entry, duration_entry, spectrum_frame, noise_level):
     """Update the plots with the current time window and noise settings."""
     start_time, duration = get_time_window(start_time_entry, duration_entry)
     if start_time is None or duration is None:
@@ -179,11 +306,6 @@ def update_plots(start_time_entry, duration_entry, spectrum_frame, noise_type, n
     # Generate signals at higher sampling rate for plotting
     carrier_plot = np.sin(2 * np.pi * fc * t_plot)
     message_plot = np.interp(t_plot, t[start_idx:end_idx], message[start_idx:end_idx])
-    modulated_plot = (1 + m * message_plot) * carrier_plot
-    
-    # Add noise if specified
-    if noise_type and noise_level > 0:
-        modulated_plot = add_noise(modulated_plot, noise_type, noise_level)
     
     # Calculate FFTs
     n_fft = 2**16
@@ -195,28 +317,56 @@ def update_plots(start_time_entry, duration_entry, spectrum_frame, noise_type, n
     # Calculate FFTs at appropriate sampling rates
     message_fft = np.abs(fft(message[start_idx:end_idx], n=n_fft))[:n_fft//2]
     carrier_fft = np.abs(fft(carrier_plot, n=n_fft))[:n_fft//2]
-    modulated_fft = np.abs(fft(modulated_plot, n=n_fft))[:n_fft//2]
     
-    # Calculate noise spectrum separately
-    if noise_type and noise_level > 0:
-        # Generate just the noise component
-        noise_signal = add_noise(np.zeros_like(modulated_plot), noise_type, noise_level)
+    # Generate clean modulated signal for noise calculation
+    clean_modulated = (1 + m * message_plot) * carrier_plot
+    
+    # Add noise if specified
+    if noise_level > 0:
+        print(f"Adding all noise types with level {noise_level} to plots")
+        # Add noise and get components
+        modulated_plot, noise_components = add_noise(clean_modulated, noise_level=noise_level)
+        print("Noise components for plotting:", list(noise_components.keys()))
+        
+        # Calculate FFTs for each noise component
+        noise_ffts = {}
+        for name, component in noise_components.items():
+            noise_ffts[name] = np.abs(fft(component, n=n_fft))[:n_fft//2]
+        
+        # Calculate combined noise spectrum
+        noise_signal = sum(noise_components.values())
         noise_fft = np.abs(fft(noise_signal, n=n_fft))[:n_fft//2]
-        # Normalize noise spectrum to its own maximum
-        noise_fft = noise_fft / np.max(noise_fft)
+        
+        # Normalize all components
+        max_val = np.max([np.max(fft) for fft in noise_ffts.values()])
+        for name in noise_ffts:
+            noise_ffts[name] = noise_ffts[name] / max_val
+        noise_fft = noise_fft / max_val
     else:
+        modulated_plot = clean_modulated
         noise_fft = np.zeros_like(carrier_fft)
+        noise_ffts = {
+            'gaussian': np.zeros_like(carrier_fft),
+            'impulse': np.zeros_like(carrier_fft),
+            'fading': np.zeros_like(carrier_fft),
+            'adjacent': np.zeros_like(carrier_fft),
+            'multipath': np.zeros_like(carrier_fft)
+        }
+
+    # Calculate FFT for modulated signal
+    modulated_fft = np.abs(fft(modulated_plot, n=n_fft))[:n_fft//2]
     
     # Demodulate at original sampling rate for audio playback
     # Generate modulated signal at original sampling rate for demodulation
     modulated = (1 + m * message[start_idx:end_idx]) * carrier[start_idx:end_idx]
-    if noise_type and noise_level > 0:
-        modulated = add_noise(modulated, noise_type, noise_level)
+    if noise_level > 0:
+        modulated, noise_components = add_noise(modulated, noise_level=noise_level)
     demodulated = np.abs(hilbert(modulated))
     demodulated_fft = np.abs(fft(demodulated, n=n_fft))[:n_fft//2]
     
-    # Apply lowpass filter
-    filtered = lowpass_filter(demodulated, 2000, fs, order=4)  # 2 kHz cutoff
+    # Apply filtering chain
+    # Use a single bandpass filter for the audio range
+    filtered = bandpass_filter(demodulated, 100, 2000, fs, order=4)  # 100 Hz - 2 kHz bandpass with lower order
     filtered_fft = np.abs(fft(filtered, n=n_fft))[:n_fft//2]
     
     # Normalize spectra (except noise spectrum which is already in dB)
@@ -249,13 +399,22 @@ def update_plots(start_time_entry, duration_entry, spectrum_frame, noise_type, n
     ax2.set_xlim(fc-100000, fc+100000)  # Show ±100 kHz around carrier
     ax2.set_ylim(0, 1.2)
 
-    # Plot noise spectrum (higher sampling rate)
+    # Plot noise spectrum with individual components
     ax3 = fig.add_subplot(total_plots, 1, 3)
-    ax3.plot(pos_freqs_plot, noise_fft, label='Noise Spectrum')
-    ax3.set_title(f'Noise Spectrum ({noise_type.capitalize()})')
+    if noise_level > 0:
+        # Plot each noise component with different colors and transparency
+        ax3.plot(pos_freqs_plot, noise_fft, label='Combined Noise', color='black', linewidth=2)
+        ax3.plot(pos_freqs_plot, noise_ffts['gaussian'], label='Gaussian (Thermal)', alpha=0.7, color='blue')
+        ax3.plot(pos_freqs_plot, noise_ffts['impulse'], label='Impulse (Lightning)', alpha=0.7, color='red')
+        ax3.plot(pos_freqs_plot, noise_ffts['fading'], label='Fading (Signal Strength)', alpha=0.7, color='green')
+        ax3.plot(pos_freqs_plot, noise_ffts['adjacent'], label='Adjacent Channel', alpha=0.7, color='purple')
+        ax3.plot(pos_freqs_plot, noise_ffts['multipath'], label='Multipath (Echo)', alpha=0.7, color='orange')
+    else:
+        ax3.plot(pos_freqs_plot, noise_fft, label='No Noise', color='black')
+    ax3.set_title('Combined Noise Spectrum Components')
     ax3.set_xlabel('Frequency (Hz)')
     ax3.set_ylabel('Normalized Magnitude')
-    ax3.legend()
+    ax3.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
     ax3.grid(True)
     ax3.set_xlim(fc-25000, fc+25000)  # Show ±25 kHz around carrier
     ax3.set_ylim(0, 1.2)  # Set y-axis limits to show normalized magnitude
@@ -264,8 +423,8 @@ def update_plots(start_time_entry, duration_entry, spectrum_frame, noise_type, n
     ax4 = fig.add_subplot(total_plots, 1, 4)
     ax4.plot(pos_freqs_plot, modulated_fft, label='Modulated Spectrum')
     title = 'Modulated Spectrum'
-    if noise_type and noise_level > 0:
-        title += f' ({noise_type} noise, SNR: {20*np.log10(1/noise_level):.1f} dB)'
+    if noise_level > 0:
+        title += f' (SNR: {20*np.log10(1/noise_level):.1f} dB)'
     ax4.set_title(title)
     ax4.set_xlabel('Frequency (Hz)')
     ax4.set_ylabel('Normalized Magnitude')
@@ -288,7 +447,7 @@ def update_plots(start_time_entry, duration_entry, spectrum_frame, noise_type, n
     # Plot filtered spectrum (original sampling rate)
     ax6 = fig.add_subplot(total_plots, 1, 6)
     ax6.semilogx(pos_freqs, filtered_fft, label='Filtered Spectrum')
-    ax6.set_title('Filtered Spectrum (Lowpass Filter)')
+    ax6.set_title('Filtered Spectrum (Bandpass Filter)')
     ax6.set_xlabel('Frequency (Hz)')
     ax6.set_ylabel('Magnitude (relative to message)')
     ax6.legend()
@@ -313,22 +472,25 @@ def play_all_sounds():
     # Generate modulated signal with noise
     m = 1.0
     modulated = (1 + m * message) * carrier
-    noise_type = noise_type_var.get()
     noise_level = float(noise_level_entry.get())
-    if noise_type and noise_level > 0:
-        print(f"Adding {noise_type} noise with level {noise_level}")
-        modulated = add_noise(modulated, noise_type, noise_level)
+    if noise_level > 0:
+        print(f"Adding all noise types with level {noise_level}")
+        # Add noise directly to modulated signal
+        modulated, noise_components = add_noise(modulated, noise_level=noise_level)
+        print("Noise components added:", list(noise_components.keys()))
+        # Store noise components for later use
+        play_all_sounds.noise_components = noise_components
     modulated = modulated / np.max(np.abs(modulated)) * 0.99
     play_audio(modulated, fs)
 
     print("\n3. Demodulated signal:")
     # Generate demodulated signal with noise
-    demodulated = amplitude_modulate(message, carrier, m, noise_type, noise_level)
+    demodulated = amplitude_modulate(message, carrier, m, noise_level=noise_level)
     play_audio(demodulated, fs)
 
     print("\n4. Filtered demodulated signal:")
-    # Apply lowpass filter
-    filtered = lowpass_filter(demodulated, 2000, fs, order=4)  # 2 kHz cutoff
+    # Apply bandpass filter
+    filtered = bandpass_filter(demodulated, 100, 2000, fs, order=4)  # 100 Hz - 2 kHz bandpass with lower order
     filtered = filtered / np.max(np.abs(filtered)) * 0.99  # Normalize for playback
     play_audio(filtered, fs)
 
@@ -380,14 +542,6 @@ if __name__ == "__main__":
     noise_frame = tk.Frame(scrollable_frame)
     noise_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
     
-    # Noise type selection
-    tk.Label(noise_frame, text="Noise Type:").pack(side=tk.LEFT, padx=5)
-    noise_type_var = tk.StringVar(value="gaussian")
-    noise_types = ["gaussian", "uniform", "impulse"]
-    for noise_type in noise_types:
-        tk.Radiobutton(noise_frame, text=noise_type.capitalize(), 
-                      variable=noise_type_var, value=noise_type).pack(side=tk.LEFT, padx=5)
-    
     # Noise level input
     tk.Label(noise_frame, text="Noise Level (0-1):").pack(side=tk.LEFT, padx=5)
     noise_level_entry = tk.Entry(noise_frame, width=10)
@@ -408,11 +562,11 @@ if __name__ == "__main__":
     # Add update button
     update_button = tk.Button(button_frame, text="Update Plots", 
                             command=lambda: update_plots(start_time, duration, scrollable_frame, 
-                                                       noise_type_var.get(), float(noise_level_entry.get())))
+                                                       float(noise_level_entry.get())))
     update_button.pack(side=tk.RIGHT, padx=5)
 
     # Initial plot
-    update_plots(start_time, duration, scrollable_frame, noise_type_var.get(), float(noise_level_entry.get()))
+    update_plots(start_time, duration, scrollable_frame, float(noise_level_entry.get()))
 
     # Set up protocol handler
     root.protocol("WM_DELETE_WINDOW", on_closing)
